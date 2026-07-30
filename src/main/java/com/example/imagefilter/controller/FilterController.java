@@ -27,22 +27,30 @@ public class FilterController {
     private static final Logger log = LoggerFactory.getLogger(FilterController.class);
 
     private final AppConfig config;
+    private final SettingsService settingsService;
     private final StateService state;
     private final OllamaService ollama;
     private final ImageService imageService;
     private final CsvExportService csvExport;
     private final BatchTaskService batchTaskService;
+    private final PromptHistoryService promptHistory;
 
-    public FilterController(AppConfig config, StateService state,
-                            OllamaService ollama, ImageService imageService,
+    public FilterController(AppConfig config,
+                            SettingsService settingsService,
+                            StateService state,
+                            OllamaService ollama,
+                            ImageService imageService,
                             CsvExportService csvExport,
-                            BatchTaskService batchTaskService) {
+                            BatchTaskService batchTaskService,
+                            PromptHistoryService promptHistory) {
         this.config = config;
+        this.settingsService = settingsService;
         this.state = state;
         this.ollama = ollama;
         this.imageService = imageService;
         this.csvExport = csvExport;
         this.batchTaskService = batchTaskService;
+        this.promptHistory = promptHistory;
     }
 
     // ─────────────────────────────────────────────
@@ -52,11 +60,18 @@ public class FilterController {
     @GetMapping("/")
     public String index(Model model) {
         model.addAttribute("imgDir", config.getImageDir());
+        model.addAttribute("resultsDir", settingsService.getResultsDir());
         model.addAttribute("defaultModel", config.getDefaultModel());
         model.addAttribute("defaultTemperature", config.getDefaultTemperature());
         model.addAttribute("predefinedPrompts", PredefinedPrompt.getAll());
         model.addAttribute("models", ollama.listModels());
         model.addAttribute("imageFiles", imageService.getImageFiles(config.getImageDir()));
+
+        // Load saved prompts so UI restores last-used values
+        Map<String, String> history = promptHistory.loadHistory();
+        model.addAttribute("savedSinglePrompt", history.getOrDefault("singlePrompt", ""));
+        model.addAttribute("savedBatchPrompt", history.getOrDefault("batchPrompt", ""));
+
         return "index";
     }
 
@@ -90,6 +105,45 @@ public class FilterController {
         if (lower.endsWith(".bmp")) return "image/bmp";
         if (lower.endsWith(".tiff")) return "image/tiff";
         return "application/octet-stream";
+    }
+
+    // ─────────────────────────────────────────────
+    // API: Settings (dynamic paths)
+    // ─────────────────────────────────────────────
+
+    @GetMapping("/api/settings")
+    @ResponseBody
+    public Map<String, Object> getSettings() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("imageDir", settingsService.getImageDir());
+        result.put("resultsDir", settingsService.getResultsDir());
+        result.put("defaultModel", settingsService.getDefaultModel());
+        result.put("defaultTemperature", settingsService.getDefaultTemperature());
+        result.put("imageCount", imageService.getImageFiles(settingsService.getImageDir()).size());
+        return result;
+    }
+
+    @PostMapping("/api/settings")
+    @ResponseBody
+    public Map<String, Object> saveSettings(@RequestParam Map<String, String> params) {
+        try {
+            Map<String, Object> updates = new LinkedHashMap<>(params);
+            settingsService.updateSettings(updates);
+        } catch (IllegalArgumentException e) {
+            return Map.of("status", "error", "message", e.getMessage());
+        } catch (RuntimeException e) {
+            return Map.of("status", "error", "message", "保存失败: " + e.getMessage());
+        }
+
+        // Re-scan after settings change
+        int count = imageService.getImageFiles(settingsService.getImageDir()).size();
+        return Map.of(
+                "status", "ok",
+                "message", "✅ 设置已保存",
+                "imageCount", count,
+                "imageDir", settingsService.getImageDir(),
+                "resultsDir", settingsService.getResultsDir()
+        );
     }
 
     // ─────────────────────────────────────────────
@@ -192,7 +246,6 @@ public class FilterController {
             return CompletableFuture.completedFuture(err);
         }
 
-        // Run on ollamaExecutor — Tomcat thread is released immediately
         return ollama.chatWithImageAsync(path.toString(), prompt, model, temperature)
                 .thenApply(response -> {
                     String category = ollama.classifyResult(response, "");
@@ -232,7 +285,9 @@ public class FilterController {
             @RequestParam String prompt,
             @RequestParam String model,
             @RequestParam double temperature,
-            @RequestParam(defaultValue = "50") int maxImages) {
+            @RequestParam(defaultValue = "50") int maxImages,
+            @RequestParam(defaultValue = "false") boolean dedupEnabled,
+            @RequestParam(defaultValue = "5") int dedupWindowSize) {
 
         if (prompt == null || prompt.isBlank()) {
             return Map.of("error", "❌ 请输入提示词");
@@ -243,9 +298,9 @@ public class FilterController {
             return Map.of("error", "❌ 未找到图片");
         }
 
-        // Launch background batch task — returns immediately with taskId
         String taskId = batchTaskService.startBatch(
-                prompt, model, temperature, config.getImageDir(), maxImages);
+                prompt, model, temperature, config.getImageDir(), maxImages,
+                dedupEnabled, dedupWindowSize);
 
         return Map.of("taskId", taskId, "status", "RUNNING");
     }
@@ -289,7 +344,6 @@ public class FilterController {
         Map<String, Object> stats = state.getStats();
         List<AnalysisResult> filtered = state.filterResults(category);
 
-        // Build markdown stats
         @SuppressWarnings("unchecked")
         Map<String, Integer> cats = (Map<String, Integer>) stats.get("categories");
         StringBuilder md = new StringBuilder();
@@ -302,7 +356,6 @@ public class FilterController {
                             .append("`: ").append(e.getValue()).append("\n"));
         }
 
-        // Build table rows
         List<List<String>> table = new ArrayList<>();
         for (AnalysisResult r : filtered) {
             String resp = r.getResponse() != null ? r.getResponse() : "";
@@ -344,8 +397,9 @@ public class FilterController {
     @GetMapping("/api/download/{filename}")
     @ResponseBody
     public ResponseEntity<Resource> downloadCsv(@PathVariable String filename) {
-        Path path = Path.of("filter_results").resolve(filename).normalize();
-        if (!path.startsWith(Path.of("filter_results").normalize()) || !Files.exists(path)) {
+        String resultsDir = settingsService.getResultsDir();
+        Path path = Path.of(resultsDir).resolve(filename).normalize();
+        if (!path.startsWith(Path.of(resultsDir).normalize()) || !Files.exists(path)) {
             return ResponseEntity.notFound().build();
         }
         Resource resource = new FileSystemResource(path);
@@ -366,5 +420,22 @@ public class FilterController {
         int count = state.getAllResults().size();
         state.clearResults();
         return Map.of("status", "🗑️ 已清除 " + count + " 条结果");
+    }
+
+    // ─────────────────────────────────────────────
+    // API: Prompt History (persistence)
+    // ─────────────────────────────────────────────
+
+    @GetMapping("/api/prompt-history")
+    @ResponseBody
+    public Map<String, String> loadPromptHistory() {
+        return promptHistory.loadHistory();
+    }
+
+    @PostMapping("/api/prompt-history")
+    @ResponseBody
+    public Map<String, String> savePromptHistory(@RequestParam Map<String, String> params) {
+        promptHistory.saveHistory(params);
+        return Map.of("status", "ok");
     }
 }

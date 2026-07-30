@@ -1,6 +1,7 @@
 /**
  * Ollama Image Filter — Frontend JavaScript
  * Handles all AJAX interactions with the Spring Boot backend.
+ * Features: progress bar, prompt auto-save/restore.
  */
 
 // ── Utility ────────────────────────────────────────────────────────
@@ -39,6 +40,14 @@ async function apiPost(url, data = {}) {
     return resp.json();
 }
 
+async function apiGet(url) {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    }
+    return resp.json();
+}
+
 // ── Temperature slider sync ────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -50,22 +59,75 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Initialize prompt text from the selected preset
+    // Initialize prompt text from the selected preset (only if no saved value)
     const promptPreset = document.getElementById('promptPreset');
     const promptText = document.getElementById('promptText');
     if (promptPreset && promptText) {
-        const selected = promptPreset.options[promptPreset.selectedIndex];
-        promptText.value = selected.dataset.prompt || '';
+        // If textarea already has a saved value from server, keep it
+        if (!promptText.value.trim()) {
+            const selected = promptPreset.options[promptPreset.selectedIndex];
+            promptText.value = selected.dataset.prompt || '';
+        }
     }
 
     // Initialize batch prompt text
     const batchPreset = document.getElementById('batchPromptPreset');
     const batchPrompt = document.getElementById('batchPrompt');
     if (batchPreset && batchPrompt) {
-        const selected = batchPreset.options[batchPreset.selectedIndex];
-        batchPrompt.value = selected.dataset.prompt || '';
+        if (!batchPrompt.value.trim()) {
+            const selected = batchPreset.options[batchPreset.selectedIndex];
+            batchPrompt.value = selected.dataset.prompt || '';
+        }
     }
+
+    // Dedup toggle: show/hide window size options
+    const dedupCheckbox = document.getElementById('dedupEnabled');
+    const dedupOptions = document.getElementById('dedupOptions');
+    if (dedupCheckbox && dedupOptions) {
+        dedupCheckbox.addEventListener('change', () => {
+            dedupOptions.style.display = dedupCheckbox.checked ? 'block' : 'none';
+        });
+    }
+
+    // Auto-save prompts when user types (debounced)
+    setupPromptAutoSave();
 });
+
+// ── Prompt auto-save (debounced) ────────────────────────────────────
+
+let promptSaveTimer = null;
+
+function setupPromptAutoSave() {
+    const singlePrompt = document.getElementById('promptText');
+    const batchPrompt = document.getElementById('batchPrompt');
+
+    if (singlePrompt) {
+        singlePrompt.addEventListener('input', () => {
+            clearTimeout(promptSaveTimer);
+            promptSaveTimer = setTimeout(() => savePrompts(), 800);
+        });
+    }
+    if (batchPrompt) {
+        batchPrompt.addEventListener('input', () => {
+            clearTimeout(promptSaveTimer);
+            promptSaveTimer = setTimeout(() => savePrompts(), 800);
+        });
+    }
+}
+
+async function savePrompts() {
+    const singlePrompt = document.getElementById('promptText');
+    const batchPrompt = document.getElementById('batchPrompt');
+    const data = {};
+    if (singlePrompt) data.singlePrompt = singlePrompt.value;
+    if (batchPrompt) data.batchPrompt = batchPrompt.value;
+    try {
+        await apiPost('/api/prompt-history', data);
+    } catch (e) {
+        // Silently ignore — prompt save is best-effort
+        console.debug('Prompt auto-save skipped', e);
+    }
+}
 
 // ── Tab 1: Single Analysis ─────────────────────────────────────────
 
@@ -159,6 +221,9 @@ async function analyzeImage() {
         return;
     }
 
+    // Save prompt before analysis
+    savePrompts();
+
     showLoading('AI 分析中...');
     try {
         const data = await apiPost('/api/analyze', {
@@ -192,6 +257,8 @@ function onSelectPrompt() {
     const isCustom = selected.dataset.custom === 'true';
 
     promptText.value = isCustom ? '' : (selected.dataset.prompt || '');
+    // Save the change
+    savePrompts();
 }
 
 function onBatchSelectPrompt() {
@@ -201,6 +268,54 @@ function onBatchSelectPrompt() {
     const isCustom = selected.dataset.custom === 'true';
 
     batchPrompt.value = isCustom ? '' : (selected.dataset.prompt || '');
+    // Save the change
+    savePrompts();
+}
+
+// ── Progress Bar Helpers ────────────────────────────────────────────
+
+function resetProgressBar() {
+    const bar = document.getElementById('batchProgressBar');
+    bar.style.width = '0%';
+    bar.textContent = '';
+    bar.classList.add('progress-bar-striped', 'progress-bar-animated');
+    bar.classList.remove('bg-success', 'bg-danger');
+    document.getElementById('batchProgressPercent').textContent = '0%';
+    document.getElementById('batchProgressLabel').textContent = '准备中...';
+    document.getElementById('batchProgressContainer').style.display = 'block';
+}
+
+function setProgressLabel(text) {
+    document.getElementById('batchProgressLabel').textContent = text;
+}
+
+function updateProgressBar(completed, total) {
+    const bar = document.getElementById('batchProgressBar');
+    if (total <= 0) {
+        // Unknown total — show indeterminate animation
+        bar.style.width = '100%';
+        bar.textContent = completed + ' / ?';
+        document.getElementById('batchProgressPercent').textContent = '...';
+    } else {
+        const pct = Math.round((completed / total) * 100);
+        document.getElementById('batchProgressPercent').textContent = pct + '%';
+        bar.style.width = pct + '%';
+        bar.setAttribute('aria-valuenow', pct);
+        bar.textContent = completed + ' / ' + total;
+    }
+    setProgressLabel('处理进度');
+}
+
+function finishProgressBar(success) {
+    const bar = document.getElementById('batchProgressBar');
+    bar.classList.remove('progress-bar-animated');
+    if (success) {
+        bar.classList.add('bg-success');
+        setProgressLabel('✅ 完成');
+    } else {
+        bar.classList.add('bg-danger');
+        setProgressLabel('❌ 失败');
+    }
 }
 
 // ── Tab 2: Batch Processing ────────────────────────────────────────
@@ -210,36 +325,46 @@ async function batchProcess() {
     const model = document.getElementById('batchModel').value;
     const temperature = document.getElementById('batchTemperature').value;
     const maxImages = document.getElementById('maxImages').value;
+    const dedupEnabled = document.getElementById('dedupEnabled').checked;
+    const dedupWindowSize = document.getElementById('dedupWindowSize').value || 5;
 
     if (!prompt.trim()) {
         renderMarkdown('batchSummary', '❌ 请输入提示词');
         return;
     }
 
-    showLoading('正在启动批量任务...');
+    // Save prompt before batch
+    savePrompts();
+
+    // Show progress bar immediately — no spinner overlay
+    resetProgressBar();
+    renderMarkdown('batchSummary', '');
+    document.getElementById('batchDownload').innerHTML = '';
+
     try {
-        // Step 1: Start the batch task (returns immediately with taskId)
+        // Step 1: Start the batch task
+        setProgressLabel('正在启动任务...');
         const startData = await apiPost('/api/batch', {
-            prompt, model, temperature, maxImages
+            prompt, model, temperature, maxImages,
+            dedupEnabled, dedupWindowSize
         });
 
         if (startData.error) {
             renderMarkdown('batchSummary', startData.error);
-            hideLoading();
+            finishProgressBar(false);
             return;
         }
 
         const taskId = startData.taskId;
-        renderMarkdown('batchSummary',
-            '⏳ 批量任务已启动，后台处理中...\n\n已处理: 0 / ? 张');
+        setProgressLabel(dedupEnabled ? '任务已启动 (去重模式)...' : '任务已启动，等待后台处理...');
+        updateProgressBar(0, 1);
 
-        // Step 2: Poll for progress every 2 seconds
+        // Step 2: Poll for progress
         await pollBatchStatus(taskId);
 
     } catch (e) {
         renderMarkdown('batchSummary', '❌ 批处理失败: ' + e.message);
-    } finally {
-        hideLoading();
+        finishProgressBar(false);
     }
 }
 
@@ -256,15 +381,19 @@ async function pollBatchStatus(taskId) {
 
             if (data.error) {
                 renderMarkdown('batchSummary', data.error);
+                finishProgressBar(false);
                 return;
             }
 
             const { status, total, completed, summary, csvUrl } = data;
 
             if (status === 'RUNNING') {
+                updateProgressBar(completed, total);
                 renderMarkdown('batchSummary',
                     '⏳ 批量处理中...\n\n已处理: ' + completed + ' / ' + total + ' 张');
             } else if (status === 'DONE') {
+                updateProgressBar(completed, total);
+                finishProgressBar(true);
                 renderMarkdown('batchSummary', summary || '✅ 处理完成');
                 const downloadDiv = document.getElementById('batchDownload');
                 if (csvUrl) {
@@ -273,8 +402,9 @@ async function pollBatchStatus(taskId) {
                 } else {
                     downloadDiv.innerHTML = '';
                 }
-                return; // Done polling
+                return;
             } else if (status === 'FAILED') {
+                finishProgressBar(false);
                 renderMarkdown('batchSummary', summary || '❌ 批处理失败');
                 return;
             }
@@ -285,6 +415,7 @@ async function pollBatchStatus(taskId) {
     }
 
     renderMarkdown('batchSummary', '⚠️ 批处理超时，请检查后台日志');
+    finishProgressBar(false);
 }
 
 // ── Tab 3: Results Browser ─────────────────────────────────────────
@@ -358,5 +489,63 @@ async function clearResults() {
             '<i class="bi bi-inbox"></i> 暂无结果</td></tr>';
     } catch (e) {
         console.error('Clear failed', e);
+    }
+}
+
+// ── Settings Tab ───────────────────────────────────────────────────
+
+async function loadSettings() {
+    try {
+        const data = await apiGet('/api/settings');
+        document.getElementById('settingsImageDir').value = data.imageDir || '';
+        document.getElementById('settingsResultsDir').value = data.resultsDir || '';
+        document.getElementById('settingsDefaultModel').value = data.defaultModel || '';
+        document.getElementById('settingsDefaultTemperature').value = data.defaultTemperature || 0.1;
+
+        // Update info table
+        document.getElementById('settingsInfoImageDir').textContent = data.imageDir || '-';
+        document.getElementById('settingsInfoResultsDir').textContent = data.resultsDir || '-';
+        document.getElementById('settingsInfoImageCount').textContent = data.imageCount || 0;
+
+        // Also refresh result count
+        try {
+            const statsData = await apiPost('/api/categories');
+            // count from stats if available
+        } catch (e) { /* ignore */ }
+    } catch (e) {
+        console.error('Failed to load settings', e);
+    }
+}
+
+async function saveSettings() {
+    const imageDir = document.getElementById('settingsImageDir').value.trim();
+    const resultsDir = document.getElementById('settingsResultsDir').value.trim();
+    const defaultModel = document.getElementById('settingsDefaultModel').value.trim();
+    const defaultTemperature = document.getElementById('settingsDefaultTemperature').value;
+
+    const data = {};
+    if (imageDir) data.imageDir = imageDir;
+    if (resultsDir) data.resultsDir = resultsDir;
+    if (defaultModel) data.defaultModel = defaultModel;
+    if (defaultTemperature !== undefined) data.defaultTemperature = defaultTemperature;
+
+    const statusEl = document.getElementById('settingsStatus');
+    try {
+        const result = await apiPost('/api/settings', data);
+        if (result.status === 'ok') {
+            statusEl.innerHTML = '<span class="text-success">' + result.message + '</span>';
+            // Update info table
+            document.getElementById('settingsInfoImageDir').textContent = result.imageDir || imageDir;
+            document.getElementById('settingsInfoResultsDir').textContent = result.resultsDir || resultsDir;
+            document.getElementById('settingsInfoImageCount').textContent = result.imageCount || 0;
+            // Re-scan images in the main tab
+            if (result.imageDir) {
+                scanImages();
+            }
+        } else {
+            statusEl.innerHTML = '<span class="text-danger">' + (result.message || '保存失败') + '</span>';
+        }
+    } catch (e) {
+        statusEl.innerHTML = '<span class="text-danger">保存失败: ' + e.message + '</span>';
     }
 }

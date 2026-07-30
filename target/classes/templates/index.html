@@ -40,6 +40,13 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="settings-tab" data-bs-toggle="tab"
+                        data-bs-target="#settingsPane" type="button" role="tab"
+                        onclick="loadSettings()">
+                    <i class="bi bi-gear"></i> 设置
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="help-tab" data-bs-toggle="tab"
                         data-bs-target="#helpPane" type="button" role="tab">
                     <i class="bi bi-question-circle"></i> 帮助
@@ -113,7 +120,8 @@
                                 <!-- Prompt Text -->
                                 <label class="form-label small fw-bold"><i class="bi bi-pencil"></i> 提示词</label>
                                 <textarea id="promptText" class="form-control form-control-sm mb-3"
-                                          rows="4" placeholder="输入自定义提示词，或从上方选择预设..."></textarea>
+                                          rows="4" placeholder="输入自定义提示词，或从上方选择预设..."
+                                          th:text="${savedSinglePrompt}"></textarea>
 
                                 <!-- Analyze Button -->
                                 <button class="btn btn-primary w-100" onclick="analyzeImage()">
@@ -171,11 +179,27 @@
 
                                 <label class="form-label small fw-bold">提示词</label>
                                 <textarea id="batchPrompt" class="form-control form-control-sm mb-3"
-                                          rows="4"></textarea>
+                                          rows="4" th:text="${savedBatchPrompt}"></textarea>
 
                                 <label class="form-label small fw-bold">最大处理数量 (0=全部)</label>
                                 <input type="number" id="maxImages" class="form-control form-control-sm mb-3"
                                        value="50" min="0">
+
+                                <!-- Dedup settings -->
+                                <div class="border rounded p-2 mb-3 bg-light">
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input" type="checkbox" id="dedupEnabled">
+                                        <label class="form-check-label small fw-bold" for="dedupEnabled">
+                                            <i class="bi bi-files"></i> 前后帧去重 (LLM对比)
+                                        </label>
+                                    </div>
+                                    <div id="dedupOptions" style="display: none;">
+                                        <label class="form-label small text-muted">滑动窗口大小（与前N个合格帧对比）</label>
+                                        <input type="number" id="dedupWindowSize" class="form-control form-control-sm"
+                                               value="5" min="1" max="10">
+                                        <div class="form-text">值越大越严格，但对比次数越多（每次多1次LLM调用）</div>
+                                    </div>
+                                </div>
 
                                 <button class="btn btn-primary w-100" onclick="batchProcess()">
                                     <i class="bi bi-play-fill"></i> 开始批量处理
@@ -187,6 +211,16 @@
                         <div class="card">
                             <div class="card-header"><i class="bi bi-bar-chart"></i> 处理结果</div>
                             <div class="card-body">
+                                <div id="batchProgressContainer" style="display: none;" class="mb-3">
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span id="batchProgressLabel">处理进度</span>
+                                        <span id="batchProgressPercent">0%</span>
+                                    </div>
+                                    <div class="progress" style="height: 24px;">
+                                        <div id="batchProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                                             role="progressbar" style="width: 0%;">0 / 0</div>
+                                    </div>
+                                </div>
                                 <div id="batchSummary" class="result-box"></div>
                                 <div id="batchDownload" class="mt-2"></div>
                             </div>
@@ -264,7 +298,98 @@
             </div>
 
             <!-- ═══════════════════════════════════════════ -->
-            <!-- Tab 4: Help -->
+            <!-- Tab 4: Settings -->
+            <!-- ═══════════════════════════════════════════ -->
+            <div class="tab-pane fade" id="settingsPane" role="tabpanel">
+                <div class="row justify-content-center">
+                    <div class="col-lg-8">
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-folder"></i> 路径配置</div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label small fw-bold">
+                                        <i class="bi bi-images"></i> 图片目录
+                                    </label>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" id="settingsImageDir" class="form-control"
+                                               placeholder="./img">
+                                        <button class="btn btn-outline-secondary" onclick="scanImages()">
+                                            <i class="bi bi-search"></i> 扫描
+                                        </button>
+                                    </div>
+                                    <div class="form-text">图片文件所在的目录路径（相对或绝对路径）</div>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label small fw-bold">
+                                        <i class="bi bi-folder-symlink"></i> 结果输出目录
+                                    </label>
+                                    <input type="text" id="settingsResultsDir" class="form-control form-control-sm"
+                                           placeholder="filter_results">
+                                    <div class="form-text">CSV导出、缓存文件、历史记录保存位置</div>
+                                </div>
+
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-8">
+                                        <label class="form-label small fw-bold">
+                                            <i class="bi bi-cpu"></i> 默认模型
+                                        </label>
+                                        <input type="text" id="settingsDefaultModel" class="form-control form-control-sm"
+                                               placeholder="llava">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold">
+                                            <i class="bi bi-thermometer-half"></i> 默认 Temperature
+                                        </label>
+                                        <input type="number" id="settingsDefaultTemperature"
+                                               class="form-control form-control-sm"
+                                               min="0" max="1" step="0.05" value="0.1">
+                                    </div>
+                                </div>
+
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-primary" onclick="saveSettings()">
+                                        <i class="bi bi-check-lg"></i> 保存设置
+                                    </button>
+                                    <button class="btn btn-outline-secondary" onclick="loadSettings()">
+                                        <i class="bi bi-arrow-repeat"></i> 刷新
+                                    </button>
+                                </div>
+                                <div id="settingsStatus" class="small mt-2"></div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-info-circle"></i> 当前状态</div>
+                            <div class="card-body">
+                                <table class="table table-sm mb-0">
+                                    <tbody>
+                                        <tr>
+                                            <td class="text-muted" style="width: 140px;">图片目录</td>
+                                            <td><code id="settingsInfoImageDir">-</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="text-muted">结果目录</td>
+                                            <td><code id="settingsInfoResultsDir">-</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="text-muted">图片数量</td>
+                                            <td><span id="settingsInfoImageCount" class="badge bg-primary">0</span></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="text-muted">已缓存结果</td>
+                                            <td><span id="settingsInfoCachedCount" class="badge bg-info">0</span></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════ -->
+            <!-- Tab 5: Help -->
             <!-- ═══════════════════════════════════════════ -->
             <div class="tab-pane fade" id="helpPane" role="tabpanel">
                 <div class="row justify-content-center">

@@ -11,13 +11,15 @@ import org.springframework.web.client.RestClient;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
+import java.nio.file.attribute.FileTime;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
  * Communicates with the Ollama REST API (default: http://localhost:11434).
+ * <p>
+ * Includes an LRU cache for base64-encoded images to avoid re-reading
+ * and re-encoding the same file on repeated analysis with different prompts.
  */
 @Service
 public class OllamaService {
@@ -25,10 +27,23 @@ public class OllamaService {
     private static final Logger log = LoggerFactory.getLogger(OllamaService.class);
     private static final String BASE_URL = "http://localhost:11434";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int MAX_CACHE_ENTRIES = 50;
 
     private final RestClient restClient = RestClient.builder()
             .baseUrl(BASE_URL)
             .build();
+
+    /**
+     * Thread-safe LRU cache for base64-encoded images.
+     * Key: imagePath + "::" + lastModifiedTime
+     */
+    private final Map<String, String> imageCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(MAX_CACHE_ENTRIES + 1, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                    return size() > MAX_CACHE_ENTRIES;
+                }
+            });
 
     /**
      * Test connection to Ollama and return status message with model count.
@@ -96,9 +111,25 @@ public class OllamaService {
      */
     public String chatWithImage(String imagePath, String prompt,
                                 String model, double temperature) throws IOException {
-        byte[] imageBytes = Files.readAllBytes(Path.of(imagePath));
-        String base64Image = Base64.getEncoder().encodeToString(imageBytes);
+        String base64Image = getOrEncodeImage(imagePath);
+        return chatWithBase64(base64Image, prompt, model, temperature);
+    }
 
+    /**
+     * Send pre-encoded image bytes to Ollama. Skips the file-read + encode step.
+     * Useful in batch processing where the file has already been read.
+     */
+    public String chatWithBytes(byte[] imageBytes, String prompt,
+                                String model, double temperature) throws IOException {
+        String base64Image = Base64.getEncoder().encodeToString(imageBytes);
+        return chatWithBase64(base64Image, prompt, model, temperature);
+    }
+
+    /**
+     * Core chat logic — sends base64-encoded image to Ollama.
+     */
+    private String chatWithBase64(String base64Image, String prompt,
+                                   String model, double temperature) throws IOException {
         Map<String, Object> requestBody = Map.of(
                 "model", model,
                 "stream", false,
@@ -128,6 +159,69 @@ public class OllamaService {
     }
 
     /**
+     * Get base64-encoded image from LRU cache, or read + encode + cache it.
+     */
+    private String getOrEncodeImage(String imagePath) throws IOException {
+        Path filePath = Path.of(imagePath);
+        FileTime mtime = Files.getLastModifiedTime(filePath);
+        String cacheKey = imagePath + "::" + mtime.toMillis();
+
+        String cached = imageCache.get(cacheKey);
+        if (cached != null) {
+            log.debug("Image cache hit: {}", imagePath);
+            return cached;
+        }
+
+        log.debug("Image cache miss, encoding: {}", imagePath);
+        byte[] imageBytes = Files.readAllBytes(filePath);
+        String base64Image = Base64.getEncoder().encodeToString(imageBytes);
+        imageCache.put(cacheKey, base64Image);
+        return base64Image;
+    }
+
+    /**
+     * Compare two images using Ollama vision to determine if they are
+     * nearly identical / very similar scenes.
+     *
+     * @return true if the images are SIMILAR (near-duplicate)
+     */
+    public boolean compareImages(String imagePath1, String imagePath2,
+                                 String model) throws IOException {
+        String b64_1 = getOrEncodeImage(imagePath1);
+        String b64_2 = getOrEncodeImage(imagePath2);
+
+        String prompt = "Are these two images nearly identical or showing very similar scenes? "
+                + "Consider composition, objects, lighting, and camera angle. "
+                + "Answer ONLY with one word: SIMILAR or DIFFERENT.";
+
+        Map<String, Object> requestBody = Map.of(
+                "model", model,
+                "stream", false,
+                "options", Map.of("temperature", 0.0),
+                "messages", List.of(
+                        Map.of(
+                                "role", "user",
+                                "content", prompt,
+                                "images", List.of(b64_1, b64_2)
+                        )
+                )
+        );
+
+        String json = MAPPER.writeValueAsString(requestBody);
+        String response = restClient.post()
+                .uri("/api/chat")
+                .header("Content-Type", "application/json")
+                .body(json)
+                .retrieve()
+                .body(String.class);
+
+        JsonNode root = MAPPER.readTree(response);
+        String answer = root.path("message").path("content").asText("").trim().toUpperCase();
+        log.debug("Image comparison result: {}", answer);
+        return answer.contains("SIMILAR") && !answer.contains("DIFFERENT");
+    }
+
+    /**
      * Async version of {@link #chatWithImage} — runs on the ollamaExecutor
      * thread pool so Tomcat request threads are released immediately.
      */
@@ -144,50 +238,40 @@ public class OllamaService {
 
     /**
      * Classify the model's raw response into a short category label.
-     * Replicates the Python classify_result() logic.
      */
     public String classifyResult(String response, String promptName) {
         if (response == null || response.isBlank()) return "UNKNOWN";
         String upper = response.toUpperCase().strip();
 
-        // Quality check (prompt-specific)
         if (promptName != null && promptName.contains("Quality")) {
             if (upper.contains("GOOD")) return "GOOD";
             if (upper.contains("OK")) return "OK";
             if (upper.contains("BAD")) return "BAD";
         }
 
-        // Document
         if (upper.contains("DOCUMENT") && !upper.contains("NOT_DOCUMENT")) return "DOCUMENT";
         if (upper.contains("NOT_DOCUMENT")) return "NOT_DOCUMENT";
 
-        // Photo
         if (upper.contains("PHOTO") && !upper.contains("NOT_PHOTO")) return "PHOTO";
         if (upper.contains("NOT_PHOTO")) return "NOT_PHOTO";
 
-        // Person
         if (upper.contains("HAS_PERSON")) return "HAS_PERSON";
         if (upper.contains("NO_PERSON")) return "NO_PERSON";
 
-        // Brightness
         for (String level : List.of("BRIGHT", "NORMAL", "DARK")) {
             if (upper.contains(level)) return level;
         }
 
-        // Color
         for (String ctype : List.of("COLORFUL", "MONOCHROME", "SEPIA")) {
             if (upper.contains(ctype)) return ctype;
         }
 
-        // Screenshot
         if (upper.contains("SCREENSHOT") && !upper.contains("NOT_SCREENSHOT")) return "SCREENSHOT";
         if (upper.contains("NOT_SCREENSHOT")) return "NOT_SCREENSHOT";
 
-        // Nature
         if (upper.contains("NATURE") && !upper.contains("NOT_NATURE")) return "NATURE";
         if (upper.contains("NOT_NATURE")) return "NOT_NATURE";
 
-        // Fallback: first word
         String[] words = response.strip().split("\\s+");
         return words.length > 0 ? words[0] : "UNKNOWN";
     }

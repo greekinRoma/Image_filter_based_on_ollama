@@ -1,32 +1,31 @@
 package com.example.imagefilter.config;
 
-import org.springframework.beans.factory.annotation.Value;
+import com.example.imagefilter.service.SettingsService;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Application configuration — image directory and other settings.
+ * Application configuration — delegates to {@link SettingsService}
+ * for all runtime-mutable values while providing backward-compatible
+ * getters for existing consumers.
  */
 @Configuration
 public class AppConfig {
 
-    @Value("${app.image-dir:./img}")
-    private String imageDir;
+    private final SettingsService settings;
 
-    @Value("${app.default-model:llava}")
-    private String defaultModel;
-
-    @Value("${app.default-temperature:0.1}")
-    private double defaultTemperature;
+    public AppConfig(SettingsService settings) {
+        this.settings = settings;
+    }
 
     public String getImageDir() {
-        return imageDir;
+        return settings.getImageDir();
     }
 
     public String getDefaultModel() {
-        return defaultModel;
+        return settings.getDefaultModel();
     }
 
     public double getDefaultTemperature() {
-        return defaultTemperature;
+        return settings.getDefaultTemperature();
     }
 }

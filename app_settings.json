@@ -1,0 +1,6 @@
+{
+  "imageDir" : "./img",
+  "resultsDir" : "filter_results",
+  "defaultModel" : "llava",
+  "defaultTemperature" : 0.1
+}

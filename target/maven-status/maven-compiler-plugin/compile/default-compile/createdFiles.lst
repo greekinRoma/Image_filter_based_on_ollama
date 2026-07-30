@@ -2,11 +2,16 @@ com/example/imagefilter/model/PredefinedPrompt.class
 com/example/imagefilter/service/StateService.class
 com/example/imagefilter/service/BatchTaskService.class
 com/example/imagefilter/model/AnalysisResult.class
+com/example/imagefilter/service/StateService$1.class
 com/example/imagefilter/config/AsyncConfig.class
 com/example/imagefilter/service/BatchTaskService$BatchTask.class
 com/example/imagefilter/controller/FilterController.class
 com/example/imagefilter/ImageFilterApplication.class
+com/example/imagefilter/service/SettingsService.class
 com/example/imagefilter/service/ImageService.class
+com/example/imagefilter/service/PromptHistoryService.class
+com/example/imagefilter/service/OllamaService$1.class
+com/example/imagefilter/model/AppSettings.class
 com/example/imagefilter/service/OllamaService.class
 com/example/imagefilter/service/BatchTaskService$BatchStatus.class
 com/example/imagefilter/config/AppConfig.class
