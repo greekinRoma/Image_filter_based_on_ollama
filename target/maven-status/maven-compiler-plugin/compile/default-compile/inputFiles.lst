@@ -1,0 +1,11 @@
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/ImageFilterApplication.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/config/AppConfig.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/config/AsyncConfig.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/controller/FilterController.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/model/AnalysisResult.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/model/PredefinedPrompt.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/service/BatchTaskService.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/service/CsvExportService.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/service/ImageService.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/service/OllamaService.java
+/home/greekinroma/project/image-filter-java/src/main/java/com/example/imagefilter/service/StateService.java

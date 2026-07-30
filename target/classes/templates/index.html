@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama 图片筛选器</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="container-fluid py-3">
+        <!-- Header -->
+        <div class="text-center mb-4">
+            <h2><i class="bi bi-images"></i> Ollama 图片智能筛选器</h2>
+            <p class="text-muted">
+                使用本地 Ollama 视觉模型对图片进行 AI 分析与筛选 ·
+                自定义提示词 · 批量处理 · 结果导出
+            </p>
+        </div>
+
+        <!-- Tabs -->
+        <ul class="nav nav-tabs mb-3" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="single-tab" data-bs-toggle="tab"
+                        data-bs-target="#singlePane" type="button" role="tab">
+                    <i class="bi bi-search"></i> 单张分析
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="batch-tab" data-bs-toggle="tab"
+                        data-bs-target="#batchPane" type="button" role="tab">
+                    <i class="bi bi-stack"></i> 批量处理
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="browse-tab" data-bs-toggle="tab"
+                        data-bs-target="#browsePane" type="button" role="tab">
+                    <i class="bi bi-table"></i> 结果浏览
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="help-tab" data-bs-toggle="tab"
+                        data-bs-target="#helpPane" type="button" role="tab">
+                    <i class="bi bi-question-circle"></i> 帮助
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <!-- ═══════════════════════════════════════════ -->
+            <!-- Tab 1: Single Analysis -->
+            <!-- ═══════════════════════════════════════════ -->
+            <div class="tab-pane fade show active" id="singlePane" role="tabpanel">
+                <div class="row g-3">
+                    <!-- Settings Column -->
+                    <div class="col-lg-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-gear"></i> 设置</div>
+                            <div class="card-body">
+                                <!-- Connect Test -->
+                                <button class="btn btn-outline-secondary btn-sm w-100 mb-2" onclick="testConnection()">
+                                    <i class="bi bi-link"></i> 测试 Ollama 连接
+                                </button>
+                                <div id="connectStatus" class="small mb-3"></div>
+
+                                <!-- Scan -->
+                                <button class="btn btn-outline-secondary btn-sm w-100 mb-2" onclick="scanImages()">
+                                    <i class="bi bi-folder"></i> 扫描图片目录
+                                </button>
+                                <div id="scanStatus" class="small mb-3"></div>
+
+                                <!-- File Select -->
+                                <label class="form-label small fw-bold">选择图片</label>
+                                <select id="fileSelect" class="form-select form-select-sm mb-3"
+                                        onchange="previewImage()">
+                                    <option value="">-- 请先扫描 --</option>
+                                    <option th:each="f : ${imageFiles}" th:value="${f}" th:text="${f}"></option>
+                                </select>
+
+                                <!-- Model -->
+                                <label class="form-label small fw-bold"><i class="bi bi-cpu"></i> 模型</label>
+                                <div class="input-group input-group-sm mb-2">
+                                    <select id="modelSelect" class="form-select">
+                                        <option th:each="m : ${models}" th:value="${m}" th:text="${m}"></option>
+                                    </select>
+                                    <button class="btn btn-outline-secondary" onclick="refreshModels()"
+                                            title="刷新模型列表">
+                                        <i class="bi bi-arrow-repeat"></i>
+                                    </button>
+                                </div>
+
+                                <!-- Temperature -->
+                                <label class="form-label small fw-bold">
+                                    <i class="bi bi-thermometer-half"></i> Temperature
+                                </label>
+                                <input type="range" class="form-range mb-3" id="temperature"
+                                       min="0" max="1" step="0.05" th:value="${defaultTemperature}">
+                                <div class="d-flex justify-content-between small text-muted">
+                                    <span>0.0</span><span id="tempValue" th:text="${defaultTemperature}">0.1</span><span>1.0</span>
+                                </div>
+
+                                <!-- Preset Prompts -->
+                                <label class="form-label small fw-bold"><i class="bi bi-list-check"></i> 预设提示词</label>
+                                <select id="promptPreset" class="form-select form-select-sm mb-2"
+                                        onchange="onSelectPrompt()">
+                                    <option th:each="entry : ${predefinedPrompts}"
+                                            th:value="${entry.key}" th:text="${entry.key}"
+                                            th:data-prompt="${entry.value == '__CUSTOM__' ? '' : entry.value}"
+                                            th:data-custom="${entry.value == '__CUSTOM__' ? 'true' : 'false'}"></option>
+                                </select>
+
+                                <!-- Prompt Text -->
+                                <label class="form-label small fw-bold"><i class="bi bi-pencil"></i> 提示词</label>
+                                <textarea id="promptText" class="form-control form-control-sm mb-3"
+                                          rows="4" placeholder="输入自定义提示词，或从上方选择预设..."></textarea>
+
+                                <!-- Analyze Button -->
+                                <button class="btn btn-primary w-100" onclick="analyzeImage()">
+                                    <i class="bi bi-rocket-takeoff"></i> 分析当前图片
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Preview Column -->
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-eye"></i> 图片预览</div>
+                            <div class="card-body text-center">
+                                <img id="imagePreview" src="" alt="选择图片进行预览"
+                                     class="img-fluid rounded shadow-sm"
+                                     style="max-height: 450px; display: none;">
+                                <div id="previewPlaceholder" class="text-muted py-5">
+                                    <i class="bi bi-image" style="font-size: 4rem;"></i>
+                                    <p>请扫描并选择图片</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="resultMarkdown" class="result-box mt-3"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════ -->
+            <!-- Tab 2: Batch Processing -->
+            <!-- ═══════════════════════════════════════════ -->
+            <div class="tab-pane fade" id="batchPane" role="tabpanel">
+                <div class="row g-3">
+                    <div class="col-lg-4">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-gear"></i> 批量设置</div>
+                            <div class="card-body">
+                                <label class="form-label small fw-bold">模型</label>
+                                <select id="batchModel" class="form-select form-select-sm mb-3">
+                                    <option th:each="m : ${models}" th:value="${m}" th:text="${m}"></option>
+                                </select>
+
+                                <label class="form-label small fw-bold">Temperature</label>
+                                <input type="range" class="form-range mb-3" id="batchTemperature"
+                                       min="0" max="1" step="0.05" th:value="${defaultTemperature}">
+
+                                <label class="form-label small fw-bold">预设提示词</label>
+                                <select id="batchPromptPreset" class="form-select form-select-sm mb-2"
+                                        onchange="onBatchSelectPrompt()">
+                                    <option th:each="entry : ${predefinedPrompts}"
+                                            th:value="${entry.key}" th:text="${entry.key}"
+                                            th:data-prompt="${entry.value == '__CUSTOM__' ? '' : entry.value}"
+                                            th:data-custom="${entry.value == '__CUSTOM__' ? 'true' : 'false'}"></option>
+                                </select>
+
+                                <label class="form-label small fw-bold">提示词</label>
+                                <textarea id="batchPrompt" class="form-control form-control-sm mb-3"
+                                          rows="4"></textarea>
+
+                                <label class="form-label small fw-bold">最大处理数量 (0=全部)</label>
+                                <input type="number" id="maxImages" class="form-control form-control-sm mb-3"
+                                       value="50" min="0">
+
+                                <button class="btn btn-primary w-100" onclick="batchProcess()">
+                                    <i class="bi bi-play-fill"></i> 开始批量处理
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-bar-chart"></i> 处理结果</div>
+                            <div class="card-body">
+                                <div id="batchSummary" class="result-box"></div>
+                                <div id="batchDownload" class="mt-2"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════ -->
+            <!-- Tab 3: Results Browser -->
+            <!-- ═══════════════════════════════════════════ -->
+            <div class="tab-pane fade" id="browsePane" role="tabpanel">
+                <div class="row g-3">
+                    <div class="col-lg-3">
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-funnel"></i> 筛选条件</div>
+                            <div class="card-body">
+                                <label class="form-label small fw-bold">按类别筛选</label>
+                                <select id="categoryFilter" class="form-select form-select-sm mb-2">
+                                    <option value="全部">全部</option>
+                                </select>
+                                <button class="btn btn-outline-secondary btn-sm w-100 mb-2"
+                                        onclick="refreshCategories()">
+                                    <i class="bi bi-arrow-repeat"></i> 刷新分类列表
+                                </button>
+                                <button class="btn btn-primary btn-sm w-100 mb-2"
+                                        onclick="filterResults()">
+                                    <i class="bi bi-search"></i> 应用筛选
+                                </button>
+                                <button class="btn btn-success btn-sm w-100 mb-2"
+                                        onclick="exportResults()">
+                                    <i class="bi bi-download"></i> 导出筛选结果
+                                </button>
+                                <button class="btn btn-danger btn-sm w-100"
+                                        onclick="clearResults()">
+                                    <i class="bi bi-trash"></i> 清除所有结果
+                                </button>
+                                <div id="exportStatus" class="small mt-2"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-9">
+                        <div class="card mb-3">
+                            <div class="card-header"><i class="bi bi-bar-chart"></i> 统计</div>
+                            <div class="card-body">
+                                <div id="filterStats">暂无结果</div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header"><i class="bi bi-table"></i> 筛选结果</div>
+                            <div class="card-body p-0">
+                                <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                                    <table class="table table-sm table-striped mb-0">
+                                        <thead class="table-dark sticky-top">
+                                            <tr>
+                                                <th>文件名</th>
+                                                <th>类别</th>
+                                                <th>响应摘要</th>
+                                                <th>时间</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="resultsTableBody">
+                                            <tr>
+                                                <td colspan="4" class="text-center text-muted py-4">
+                                                    <i class="bi bi-inbox"></i> 暂无结果，请先进行分析
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════ -->
+            <!-- Tab 4: Help -->
+            <!-- ═══════════════════════════════════════════ -->
+            <div class="tab-pane fade" id="helpPane" role="tabpanel">
+                <div class="row justify-content-center">
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-body markdown-content">
+                                <h4><i class="bi bi-rocket-takeoff"></i> 快速开始</h4>
+
+                                <h5>1. 安装 Ollama</h5>
+                                <pre><code>curl -fsSL https://ollama.com/install.sh | sh</code></pre>
+
+                                <h5>2. 下载视觉模型 (推荐)</h5>
+                                <pre><code>ollama pull llava:13b        # LLaVA 视觉模型
+ollama pull minicpm-v:latest  # MiniCPM-V 视觉模型
+ollama pull llama3.2-vision   # Llama 3.2 视觉模型</code></pre>
+
+                                <h5>3. 启动本应用</h5>
+                                <pre><code>./mvnw spring-boot:run</code></pre>
+                                <p>或者：</p>
+                                <pre><code>mvn spring-boot:run -Dspring-boot.run.arguments="--app.image-dir=./img"</code></pre>
+
+                                <h5>4. 访问</h5>
+                                <p>打开浏览器访问 <code>http://localhost:8080</code></p>
+
+                                <hr>
+
+                                <h4><i class="bi bi-list-ol"></i> 使用流程</h4>
+                                <ol>
+                                    <li><strong>连接测试</strong> — 在「单张分析」页点击"测试 Ollama 连接"</li>
+                                    <li><strong>扫描图片</strong> — 点击"扫描图片目录"载入图片列表</li>
+                                    <li><strong>选择提示词</strong> — 从预设中选择或输入自定义提示词</li>
+                                    <li><strong>分析</strong> — 单张分析或批量处理</li>
+                                    <li><strong>筛选导出</strong> — 在「结果浏览」页按类别筛选并导出 CSV</li>
+                                </ol>
+
+                                <h4><i class="bi bi-lightbulb"></i> 提示词技巧</h4>
+                                <ul>
+                                    <li>要求模型以 <strong>ONLY one word</strong> 回答，便于分类筛选</li>
+                                    <li>自定义提示词选项允许自由输入任意提示词</li>
+                                    <li>提示词可使用中文或英文，取决于所选模型</li>
+                                </ul>
+
+                                <h4><i class="bi bi-folder"></i> 文件说明</h4>
+                                <ul>
+                                    <li><code>img/</code> — 图片目录（通过 <code>app.image-dir</code> 配置）</li>
+                                    <li><code>filter_results/</code> — 导出 CSV 的保存目录</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center text-muted small mt-4">
+            Powered by Ollama + Spring Boot + Thymeleaf | Java B/S Architecture
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="text-center">
+            <div class="spinner-border text-primary mb-2" role="status"></div>
+            <p class="text-muted" id="loadingText">处理中...</p>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script th:src="@{/js/app.js}"></script>
+</body>
+</html>
